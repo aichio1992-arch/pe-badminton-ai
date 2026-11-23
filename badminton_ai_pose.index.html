@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>體育課堂 AI 動作姿態與手臂角度分析</title>
+  <!-- 載入 MediaPipe Pose 庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; }
+    body { background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; min-height: 100vh; }
+    header { background: #1e293b; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; flex-wrap: wrap; gap: 10px; }
+    header h1 { font-size: 1.15rem; font-weight: 700; color: #38bdf8; }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    select, button, input[type="number"] {
+      background: #334155; color: #f8fafc; border: 1px solid #475569; padding: 8px 12px;
+      border-radius: 8px; font-size: 0.9rem; cursor: pointer;
+    }
+    button.primary { background: #0284c7; border-color: #0284c7; font-weight: 600; }
+    button.primary:hover { background: #0369a1; }
+    button.snapshot { background: #10b981; border-color: #10b981; color: #064e3b; font-weight: 700; }
+    button.snapshot:hover { background: #059669; color: #fff; }
+    .main-container { display: flex; flex: 1; padding: 16px; gap: 16px; flex-wrap: wrap; justify-content: center; }
+    .video-wrapper {
+      position: relative; width: 100%; max-width: 840px; aspect-ratio: 4/3;
+      background: #000; border-radius: 12px; overflow: hidden; border: 2px solid #334155;
+    }
+    video { display: none; }
+    canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .status-badge {
+      position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.8);
+      padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; border: 1px solid #475569;
+    }
+    .panel {
+      width: 100%; max-width: 340px; background: #1e293b; border-radius: 12px;
+      padding: 16px; display: flex; flex-direction: column; gap: 14px; border: 1px solid #334155;
+    }
+    .card { background: #0f172a; padding: 14px; border-radius: 10px; border: 1px solid #334155; }
+    .card-title { font-size: 0.85rem; color: #94a3b8; margin-bottom: 6px; }
+    .angle-value { font-size: 2.2rem; font-weight: 800; line-height: 1.1; }
+    .angle-sub { font-size: 0.8rem; color: #cbd5e1; margin-top: 6px; }
+    .good { color: #4ade80; }
+    .warn { color: #facc15; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; margin-top: 8px; }
+    .setting-row input { width: 70px; text-align: center; }
+    .snapshot-box img { width: 100%; border-radius: 8px; border: 1px solid #475569; margin-top: 8px; }
+    .tip-box { font-size: 0.82rem; color: #cbd5e1; line-height: 1.5; background: #1e293b; padding: 10px; border-left: 3px solid #38bdf8; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🏸 體育課堂 AI 姿態與手臂角度即時分析</h1>
+  <div class="controls">
+    <select id="armSelect" title="選擇觀察手臂">
+      <option value="right">觀察右手（右手持拍）</option>
+      <option value="left">觀察左手（左手持拍）</option>
+    </select>
+    <select id="cameraFacing" title="選擇鏡頭方向">
+      <option value="environment">後置鏡頭（架設三腳架推薦）</option>
+      <option value="user">前置鏡頭（自拍鏡像）</option>
+    </select>
+    <button class="primary" id="startBtn">啟動鏡頭與 AI</button>
+    <button class="snapshot" id="snapBtn" disabled>📸 定格對比截圖</button>
+  </div>
+</header>
+
+<div class="main-container">
+  <div class="video-wrapper">
+    <div class="status-badge" id="statusText">狀態：請點擊「啟動鏡頭與 AI」</div>
+    <video id="inputVideo" playsinline></video>
+    <canvas id="outputCanvas" width="800" height="600"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="card">
+      <div class="card-title">1. 手肘伸展角度（肩 - 肘 - 腕）</div>
+      <div class="angle-value warn" id="elbowAngle">--°</div>
+      <div class="angle-sub" id="elbowFeedback">等待偵測中...</div>
+      <div class="setting-row">
+        <span>達標最小角度（綠燈）：</span>
+        <input type="number" id="targetElbow" value="125" min="60" max="180" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">2. 手肘抬舉角度（髖 - 肩 - 肘）</div>
+      <div class="angle-value warn" id="shoulderAngle">--°</div>
+      <div class="angle-sub" id="shoulderFeedback">檢視大臂是否遠離軀幹（避免貼身）</div>
+      <div class="setting-row">
+        <span>達標最小抬舉（綠燈）：</span>
+        <input type="number" id="targetShoulder" value="45" min="15" max="170" />
+      </div>
+    </div>
+
+    <div class="tip-box">
+      <strong>課堂操作提示（反手挑球）：</strong><br>
+      將平板固定於網柱側方 45° 角。學生揮拍挑球瞬間，觀察<strong>手肘角度（展開發力）</strong>與<strong>抬舉角度（手肘不貼死肋骨）</strong>是否亮起綠燈。
+    </div>
+
+    <div class="card snapshot-box" id="snapshotContainer" style="display:none;">
+      <div class="card-title">最近一次定格畫面（供同儕互評）：</div>
+      <img id="snapshotImg" alt="定格截圖" />
+    </div>
+  </div>
+</div>
+
+<script>
+  const videoElement = document.getElementById('inputVideo');
+  const canvasElement = document.getElementById('outputCanvas');
+  const canvasCtx = canvasElement.getContext('2d');
+  const statusText = document.getElementById('statusText');
+  const startBtn = document.getElementById('startBtn');
+  const snapBtn = document.getElementById('snapBtn');
+  const armSelect = document.getElementById('armSelect');
+  const cameraFacing = document.getElementById('cameraFacing');
+
+  const elbowAngleEl = document.getElementById('elbowAngle');
+  const elbowFeedbackEl = document.getElementById('elbowFeedback');
+  const shoulderAngleEl = document.getElementById('shoulderAngle');
+  const shoulderFeedbackEl = document.getElementById('shoulderFeedback');
+  const targetElbowInput = document.getElementById('targetElbow');
+  const targetShoulderInput = document.getElementById('targetShoulder');
+
+  let currentStream = null;
+  let isRunning = false;
+
+  // 計算三點夾角 (A - B - C, B為頂點)
+  function calculateAngle(a, b, c) {
+    const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+    let angle = Math.abs(radians * 180.0 / Math.PI);
+    if (angle > 180.0) {
+      angle = 360 - angle;
+    }
+    return Math.round(angle);
+  }
+
+  // 初始化 MediaPipe Pose
+  const pose = new Pose({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+  });
+
+  pose.setOptions({
+    modelComplexity: 1,
+    smoothLandmarks: true,
+    enableSegmentation: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  pose.onResults((results) => {
+    canvasElement.width = videoElement.videoWidth || 800;
+    canvasElement.height = videoElement.videoHeight || 600;
+
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+    // 若使用前置鏡頭則鏡像翻轉
+    if (cameraFacing.value === 'user') {
+      canvasCtx.translate(canvasElement.width, 0);
+      canvasCtx.scale(-1, 1);
+    }
+
+    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+    if (results.poseLandmarks) {
+      statusText.textContent = '狀態：AI 骨骼即時追蹤中';
+      const lm = results.poseLandmarks;
+
+      // 繪製全身基礎骨骼（半透明白色）
+      drawConnectors(canvasCtx, lm, POSE_CONNECTIONS, { color: 'rgba(255,255,255,0.45)', lineWidth: 2 });
+
+      // 取得所選手臂關鍵點索引 (右手: 12肩,14肘,16腕,24髖 / 左手: 11肩,13肘,15腕,23髖)
+      const isRight = armSelect.value === 'right';
+      const shoulder = lm[isRight ? 12 : 11];
+      const elbow = lm[isRight ? 14 : 13];
+      const wrist = lm[isRight ? 16 : 15];
+      const hip = lm[isRight ? 24 : 23];
+
+      if (shoulder && elbow && wrist && hip &&
+          shoulder.visibility > 0.5 && elbow.visibility > 0.5 && wrist.visibility > 0.5) {
+
+        const elbowDeg = calculateAngle(shoulder, elbow, wrist);
+        const shoulderDeg = calculateAngle(hip, shoulder, elbow);
+
+        const targetElbow = parseInt(targetElbowInput.value, 10) || 125;
+        const targetShoulder = parseInt(targetShoulderInput.value, 10) || 45;
+
+        const elbowOk = elbowDeg >= targetElbow;
+        const shoulderOk = shoulderDeg >= targetShoulder;
+
+        // 更新右側數據面板
+        elbowAngleEl.textContent = `${elbowDeg}°`;
+        elbowAngleEl.className = `angle-value ${elbowOk ? 'good' : 'warn'}`;
+        elbowFeedbackEl.textContent = elbowOk ? '✅ 手臂展開充分（達標）' : '⚠️ 手肘偏彎，嘗試向前上方伸展';
+
+        shoulderAngleEl.textContent = `${shoulderDeg}°`;
+        shoulderAngleEl.className = `angle-value ${shoulderOk ? 'good' : 'warn'}`;
+        shoulderFeedbackEl.textContent = shoulderOk ? '✅ 大臂已抬起（未貼身）' : '⚠️ 大臂過於貼近身體，請抬肘引拍';
+
+        // 醒目繪製目標手臂連線
+        const w = canvasElement.width;
+        const h = canvasElement.height;
+        canvasCtx.lineWidth = 6;
+        canvasCtx.strokeStyle = (elbowOk && shoulderOk) ? '#4ade80' : '#facc15';
+        canvasCtx.beginPath();
+        canvasCtx.moveTo(hip.x * w, hip.y * h);
+        canvasCtx.lineTo(shoulder.x * w, shoulder.y * h);
+        canvasCtx.lineTo(elbow.x * w, elbow.y * h);
+        canvasCtx.lineTo(wrist.x * w, wrist.y * h);
+        canvasCtx.stroke();
+
+        // 繪製關節圓點
+        [shoulder, elbow, wrist].forEach(pt => {
+          canvasCtx.fillStyle = '#38bdf8';
+          canvasCtx.beginPath();
+          canvasCtx.arc(pt.x * w, pt.y * h, 8, 0, 2 * Math.PI);
+          canvasCtx.fill();
+        });
+
+        // 在畫面上直接標示手肘角度數字（需還原鏡像以免文字反轉）
+        canvasCtx.save();
+        if (cameraFacing.value === 'user') {
+          canvasCtx.translate(canvasElement.width, 0);
+          canvasCtx.scale(-1, 1);
+        }
+        const textX = cameraFacing.value === 'user' ? (1 - elbow.x) * w : elbow.x * w;
+        const textY = elbow.y * h - 16;
+        canvasCtx.font = 'bold 26px sans-serif';
+        canvasCtx.fillStyle = elbowOk ? '#4ade80' : '#facc15';
+        canvasCtx.strokeStyle = '#0f172a';
+        canvasCtx.lineWidth = 4;
+        canvasCtx.strokeText(`${elbowDeg}°`, textX, textY);
+        canvasCtx.fillText(`${elbowDeg}°`, textX, textY);
+        canvasCtx.restore();
+      }
+    } else {
+      statusText.textContent = '狀態：請讓全身或上半身進入畫面中';
+    }
+    canvasCtx.restore();
+  });
+
+  async function startCamera() {
+    if (currentStream) {
+      currentStream.getTracks().forEach(track => track.stop());
+    }
+    statusText.textContent = '狀態：正在啟動鏡頭與載入 AI 模型...';
+    try {
+      currentStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: cameraFacing.value, width: { ideal: 800 }, height: { ideal: 600 } },
+        audio: false
+      });
+      videoElement.srcObject = currentStream;
+      await videoElement.play();
+      isRunning = true;
+      snapBtn.disabled = false;
+      startBtn.textContent = '重新切換鏡頭';
+      processFrame();
+    } catch (err) {
+      statusText.textContent = '錯誤：無法存取鏡頭，請確認瀏覽器權限或使用 HTTPS / localhost 開啟';
+      console.error(err);
+    }
+  }
+
+  async function processFrame() {
+    if (!isRunning) return;
+    if (videoElement.readyState >= 2) {
+      await pose.send({ image: videoElement });
+    }
+    requestAnimationFrame(processFrame);
+  }
+
+  startBtn.addEventListener('click', startCamera);
+
+  snapBtn.addEventListener('click', () => {
+    const dataUrl = canvasElement.toDataURL('image/png');
+    document.getElementById('snapshotImg').src = dataUrl;
+    document.getElementById('snapshotContainer').style.display = 'block';
+  });
+</script>
+
+</body>
+</html>
